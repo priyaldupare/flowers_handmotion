@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>🌸 Finger Bloom</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#000; overflow:hidden; font-family:'Georgia',serif; }
+#canvas { display:block; width:100vw; height:100vh; }
+#overlay {
+  position:fixed; inset:0; display:flex; flex-direction:column;
+  align-items:center; justify-content:center; z-index:20;
+  background:rgba(0,0,0,0.92); text-align:center; padding:20px;
+}
+#overlay h1 { font-size:42px; color:#FFD740; font-weight:400; letter-spacing:0.15em; margin-bottom:10px; }
+#overlay p { color:rgba(255,255,255,0.5); font-size:14px; letter-spacing:0.08em; margin-bottom:32px; line-height:1.9; }
+#startBtn {
+  background:linear-gradient(135deg,#FF6B00,#FFD700);
+  color:#000; border:none; padding:16px 48px; border-radius:60px;
+  font-size:17px; cursor:pointer; font-weight:700; letter-spacing:0.08em;
+  box-shadow:0 0 40px rgba(255,160,0,0.5);
+}
+#startBtn:hover { transform:scale(1.04); }
+#status {
+  position:fixed; top:16px; left:50%; transform:translateX(-50%);
+  background:rgba(0,0,0,0.4); border:1px solid rgba(255,215,64,0.3);
+  border-radius:30px; padding:6px 20px;
+  color:rgba(255,215,64,0.7); font-size:12px; letter-spacing:0.1em;
+  z-index:10; display:none;
+}
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+
+<div id="overlay">
+  <h1>🌸 FINGER BLOOM</h1>
+  <p>
+    flowers grow from every fingertip<br>
+    spread fingers → flowers bloom big<br>
+    close hand → buds shrink<br>
+    <span style="color:rgba(255,180,0,0.5);font-size:12px;">record screen with ⌘+Shift+5 to share on instagram</span>
+  </p>
+  <button id="startBtn" onclick="startApp()">Open Camera →</button>
+</div>
+<div id="status">✦ loading hand tracking…</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const statusEl = document.getElementById('status');
+let W, H;
+
+function resize(){
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ── Hand skeleton connections ──────────────────────────────────
+const CONNECTIONS = [
+  [0,1],[1,2],[2,3],[3,4],
+  [0,5],[5,6],[6,7],[7,8],
+  [0,9],[9,10],[10,11],[11,12],
+  [0,13],[13,14],[14,15],[15,16],
+  [0,17],[17,18],[18,19],[19,20],
+  [5,9],[9,13],[13,17],[0,17]
+];
+const FINGER_TIPS = [4, 8, 12, 16, 20];
+const FINGER_MIDS = [2, 6, 10, 14, 18]; // pip joints
+
+// ── Convert landmark to screen coords (mirrored) ───────────────
+function lmX(lm){ return (1 - lm.x) * W; }
+function lmY(lm){ return lm.y * H; }
+
+function dist2(ax,ay,bx,by){ return Math.hypot(ax-bx, ay-by); }
+
+// ── Flower drawing ─────────────────────────────────────────────
+function drawFlower(cx, cy, r, angle, t, fi){
+  if(r < 4) return;
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(angle);
+
+  const petals = 5;
+  const colors = [
+    ['#FF6B00','#FFD700'],
+    ['#FF4500','#FF8C00'],
+    ['#FF7000','#FFC200'],
+    ['#FF5500','#FFB000'],
+    ['#FF6000','#FFE000'],
+  ];
+  const [outerC, innerC] = colors[fi % colors.length];
+
+  // Glow ring
+  ctx.save();
+  ctx.globalCompositeOperation = 'screen';
+  const gl = ctx.createRadialGradient(0,0,0,0,0,r*2.2);
+  gl.addColorStop(0, 'rgba(255,180,30,0.22)');
+  gl.addColorStop(1, 'transparent');
+  ctx.fillStyle = gl;
+  ctx.beginPath(); ctx.arc(0,0,r*2.2,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+
+  // Petals — two layers for depth
+  for(let layer=0;layer<2;layer++){
+    const layerR = r * (layer===0 ? 1 : 0.72);
+    const off = layer===0 ? 0 : Math.PI/petals;
+    for(let i=0;i<petals;i++){
+      ctx.save();
+      ctx.rotate((i/petals)*Math.PI*2 + off + Math.sin(t*0.8+fi)*0.06);
+      const g = ctx.createLinearGradient(0, 0, 0, -layerR);
+      g.addColorStop(0, innerC);
+      g.addColorStop(0.5, outerC);
+      g.addColorStop(1, layer===0 ? '#CC2200' : '#FF5500');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.bezierCurveTo(
+        -layerR*0.38, -layerR*0.4,
+        -layerR*0.25, -layerR*0.9,
+        0, -layerR
+      );
+      ctx.bezierCurveTo(
+        layerR*0.25, -layerR*0.9,
+        layerR*0.38, -layerR*0.4,
+        0, 0
+      );
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  // Center
+  const cg = ctx.createRadialGradient(-r*0.05,-r*0.05,0,0,0,r*0.28);
+  cg.addColorStop(0,'#FFF176');
+  cg.addColorStop(0.6,'#FFD600');
+  cg.addColorStop(1,'#FF8F00');
+  ctx.fillStyle=cg;
+  ctx.beginPath(); ctx.arc(0,0,r*0.28,0,Math.PI*2); ctx.fill();
+
+  ctx.restore();
+}
+
+// ── Stem from fingertip going upward ──────────────────────────
+function drawStemAndFlower(tipX, tipY, stemLen, bloomR, angle, t, fi){
+  // Direction: mostly upward from fingertip
+  const endX = tipX + Math.sin(angle) * stemLen;
+  const endY = tipY - Math.cos(angle) * stemLen;
+
+  // Stem line
+  ctx.save();
+  ctx.strokeStyle = 'rgba(100,255,80,0.75)';
+  ctx.lineWidth = Math.max(1.5, bloomR * 0.07);
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(tipX, tipY);
+  const cpX = tipX + Math.sin(angle)*stemLen*0.5 + Math.cos(angle)*stemLen*0.15;
+  const cpY = tipY - Math.cos(angle)*stemLen*0.5 + Math.sin(angle)*stemLen*0.15;
+  ctx.quadraticCurveTo(cpX, cpY, endX, endY);
+  ctx.stroke();
+  ctx.restore();
+
+  // Leaf on stem
+  if(stemLen > 30){
+    const lx = tipX + Math.sin(angle)*stemLen*0.55;
+    const ly = tipY - Math.cos(angle)*stemLen*0.55;
+    ctx.save();
+    ctx.translate(lx, ly);
+    ctx.rotate(angle + 0.7);
+    ctx.fillStyle = 'rgba(60,180,60,0.7)';
+    ctx.beginPath();
+    ctx.ellipse(stemLen*0.12, 0, stemLen*0.14, stemLen*0.06, 0, 0, Math.PI*2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  drawFlower(endX, endY, bloomR, angle, t, fi);
+}
+
+// ── Skeleton overlay ───────────────────────────────────────────
+function drawSkeleton(lms){
+  ctx.save();
+  ctx.strokeStyle = 'rgba(140,100,255,0.7)';
+  ctx.lineWidth = 1.5;
+  ctx.lineCap = 'round';
+  for(const [a,b] of CONNECTIONS){
+    ctx.beginPath();
+    ctx.moveTo(lmX(lms[a]), lmY(lms[a]));
+    ctx.lineTo(lmX(lms[b]), lmY(lms[b]));
+    ctx.stroke();
+  }
+  // Dots on joints
+  for(const lm of lms){
+    ctx.fillStyle = 'rgba(180,140,255,0.8)';
+    ctx.beginPath();
+    ctx.arc(lmX(lm), lmY(lm), 3, 0, Math.PI*2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ── HUD labels (like TouchDesigner) ───────────────────────────
+function drawHUD(lms, growVal, bloomVal, side){
+  const wrist = lms[0];
+  const wx = lmX(wrist), wy = lmY(wrist);
+  const offsetX = side === 'Left' ? -120 : 60;
+
+  ctx.save();
+  ctx.font = '13px monospace';
+  ctx.fillStyle = 'rgba(200,150,255,0.85)';
+  ctx.fillText(`Grow: ${growVal.toFixed(2)}`, wx + offsetX, wy + 30);
+  ctx.fillText(`Bloom: ${bloomVal.toFixed(2)}`, wx + offsetX, wy + 48);
+  ctx.restore();
+}
+
+// ── Per-hand render ────────────────────────────────────────────
+function renderHand(lms, t){
+  const palm = lms[0];
+  const middleBase = lms[9];
+
+  // Hand scale reference
+  const handScale = dist2(lmX(palm),lmY(palm),lmX(middleBase),lmY(middleBase));
+
+  // Overall spread = thumb tip to pinky tip distance
+  const thumbTip = lms[4], pinkyTip = lms[20];
+  const spread = dist2(lmX(thumbTip),lmY(thumbTip),lmX(pinkyTip),lmY(pinkyTip));
+  const bloomVal = Math.min(1, spread / (handScale * 2.8));
+  const bloomR = 14 + bloomVal * 60;
+
+  // Draw skeleton first (under flowers)
+  drawSkeleton(lms);
+
+  // Draw flowers on each fingertip
+  FINGER_TIPS.forEach((tipIdx, fi) => {
+    const tip = lms[tipIdx];
+    const mid = lms[FINGER_MIDS[fi]];
+    const tipX = lmX(tip), tipY = lmY(tip);
+    const midX = lmX(mid), midY = lmY(mid);
+
+    // Per-finger extension (how open this finger is)
+    const fingerDist = dist2(tipX,tipY,lmX(palm),lmY(palm));
+    const growVal = Math.min(1, fingerDist / (handScale * 2.2));
+    const stemLen = 20 + growVal * 90;
+
+    // Stem angle: direction from MCP joint to fingertip, then continue
+    const angle = Math.atan2(tipX - midX, -(tipY - midY));
+
+    drawStemAndFlower(tipX, tipY, stemLen, bloomR * (0.7 + growVal * 0.5), angle, t, fi);
+  });
+
+  // HUD
+  const thumbTipIdx = lms[4], pinkyTipIdx = lms[20];
+  const handGrow = Math.min(1, dist2(lmX(lms[9]),lmY(lms[9]),lmX(lms[0]),lmY(lms[0])) / (handScale*2));
+  const side = lmX(lms[0]) < W/2 ? 'Left' : 'Right';
+  drawHUD(lms, handGrow, bloomVal, side);
+}
+
+// ── Falling petal ambience ─────────────────────────────────────
+const ambientPetals = Array.from({length:30},()=>({
+  x:Math.random()*1920, y:Math.random()*1080,
+  r:Math.random()*4+2, vx:(Math.random()-0.5)*0.8,
+  vy:Math.random()*1+0.3, rot:Math.random()*Math.PI*2,
+  rs:(Math.random()-0.5)*0.03,
+  color:`hsl(${Math.floor(Math.random()*40+10)},100%,${55+Math.random()*20}%)`,
+  alpha:Math.random()*0.4+0.1
+}));
+
+function updateAmbient(){
+  for(const p of ambientPetals){
+    p.x += p.vx + Math.sin(p.y*0.01)*0.4;
+    p.y += p.vy; p.rot += p.rs;
+    if(p.y > H+20){ p.y=-10; p.x=Math.random()*W; }
+    ctx.save(); ctx.globalAlpha=p.alpha;
+    ctx.translate(p.x,p.y); ctx.rotate(p.rot);
+    ctx.fillStyle=p.color;
+    ctx.beginPath(); ctx.ellipse(0,0,p.r,p.r*0.5,0,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+  }
+}
+
+// ── Main render loop ───────────────────────────────────────────
+let handsData = [];
+const startTime = Date.now();
+let video = null;
+
+function render(){
+  const t = (Date.now()-startTime)/1000;
+  requestAnimationFrame(render);
+  ctx.clearRect(0,0,W,H);
+
+  if(video && video.readyState >= 2){
+    // Draw mirrored video
+    ctx.save();
+    ctx.scale(-1,1); ctx.translate(-W,0);
+    ctx.drawImage(video, 0, 0, W, H);
+    ctx.restore();
+
+    // Warm vintage tone
+    ctx.fillStyle = 'rgba(255,180,60,0.07)';
+    ctx.fillRect(0,0,W,H);
+
+    // Vignette
+    const vig = ctx.createRadialGradient(W/2,H/2,H*0.22,W/2,H/2,H*0.82);
+    vig.addColorStop(0,'rgba(0,0,0,0)');
+    vig.addColorStop(1,'rgba(0,0,0,0.6)');
+    ctx.fillStyle=vig; ctx.fillRect(0,0,W,H);
+  } else {
+    ctx.fillStyle='#0d0905'; ctx.fillRect(0,0,W,H);
+  }
+
+  updateAmbient();
+
+  for(const lms of handsData){
+    renderHand(lms, t);
+  }
+
+  // Watermark
+  ctx.save();
+  ctx.globalAlpha=0.35;
+  ctx.fillStyle='#fff';
+  ctx.font='italic 12px Georgia';
+  ctx.letterSpacing='0.1em';
+  ctx.fillText('✦ finger bloom', 16, H-16);
+  ctx.restore();
+}
+requestAnimationFrame(render);
+
+// ── Start app ─────────────────────────────────────────────────
+window.startApp = async function(){
+  document.getElementById('overlay').style.display='none';
+  statusEl.style.display='block';
+  statusEl.textContent='✦ requesting camera…';
+
+  video = document.createElement('video');
+  video.autoplay=true; video.playsInline=true; video.muted=true;
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video:{width:{ideal:1280},height:{ideal:720},facingMode:'user'},
+      audio:false
+    });
+    video.srcObject=stream;
+    await video.play();
+  } catch(e){
+    statusEl.textContent='❌ Camera denied — click the 🔒 in Chrome address bar → Camera → Allow → refresh';
+    statusEl.style.color='#ff6b6b';
+    return;
+  }
+
+  statusEl.textContent='✦ loading hand tracking model…';
+
+  const hands = new Hands({
+    locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`
+  });
+
+  hands.setOptions({
+    maxNumHands: 2,
+    modelComplexity: 1,
+    minDetectionConfidence: 0.7,
+    minTrackingConfidence: 0.55
+  });
+
+  hands.onResults(results => {
+    handsData = results.multiHandLandmarks || [];
+  });
+
+  const camera = new Camera(video, {
+    onFrame: async () => { await hands.send({image:video}); },
+    width: 1280, height: 720
+  });
+
+  camera.start().then(()=>{
+    statusEl.textContent='✦ raise your hands!';
+    setTimeout(()=>{ statusEl.style.display='none'; }, 3000);
+  }).catch(()=>{
+    statusEl.textContent='❌ Camera failed — try refreshing';
+    statusEl.style.color='#ff6b6b';
+  });
+};
+</script>
+</body>
+</html>
